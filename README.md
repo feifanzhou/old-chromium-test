@@ -153,3 +153,7 @@ docker rmi legacy44:jessie-ch44
 - Build pipeline uses Babel first, then esbuild bundle output to `public/dist/main.js`.
 - Selenium uses manual JSON Wire `desiredCapabilities` session creation for ChromeDriver 2.19 compatibility.
 - Selenium executor overrides script endpoints to legacy paths (`/execute`, `/execute_async`) because old ChromeDriver does not support W3C `/execute/sync`.
+
+---
+
+Built with Amp: [thread 1](https://github.com/feifanzhou/old-chromium-test), [thread 2](https://ampcode.com/threads/T-019d1c00-4524-7030-8de2-095c557dde72)
