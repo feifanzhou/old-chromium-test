@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const sourcePath = path.resolve("src/main.jsx");
+const sourceDir = path.dirname(sourcePath);
 const transpiledPath = path.resolve(".tmp/main.transpiled.js");
 
 async function build() {
@@ -20,7 +21,12 @@ async function build() {
   fs.writeFileSync(transpiledPath, babelResult.code, "utf8");
 
   await esbuild.build({
-    entryPoints: [transpiledPath],
+    stdin: {
+      contents: babelResult.code,
+      loader: "jsx",
+      resolveDir: sourceDir,
+      sourcefile: sourcePath,
+    },
     bundle: true,
     outfile: "public/dist/main.js",
     format: "iife",

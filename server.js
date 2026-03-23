@@ -2,6 +2,7 @@ const express = require("express");
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
+const HOST = process.env.HOST || "127.0.0.1";
 
 app.use(express.static("public"));
 
@@ -32,6 +33,6 @@ app.get("/*splat", (_req, res) => {
   res.sendFile("index.html", { root: "public" });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server listening on http://localhost:${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`Server listening on http://${HOST}:${PORT}`);
 });

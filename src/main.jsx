@@ -1,5 +1,6 @@
 import "es6-promise/auto";
 import "whatwg-fetch";
+import "./polyfills/object-assign";
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 

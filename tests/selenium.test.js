@@ -2,16 +2,45 @@ const { spawn } = require("node:child_process");
 const net = require("node:net");
 const path = require("node:path");
 const process = require("node:process");
-const { Builder, By, until } = require("selenium-webdriver");
+const { By, WebDriver, until } = require("selenium-webdriver");
+const http = require("selenium-webdriver/http");
+const command = require("selenium-webdriver/lib/command");
 const chrome = require("selenium-webdriver/chrome");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const EXPECTED_TUBI_URL = "https://tubitv.com/?utm_source=dev";
-const CHROME_BINARY_PATH = process.env.CHROME_BINARY_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const CHROMEDRIVER_PATH = process.env.CHROMEDRIVER_PATH || "";
+const REMOTE_WEBDRIVER_URL = process.env.REMOTE_WEBDRIVER_URL || "";
+const USING_REMOTE_WEBDRIVER = Boolean(REMOTE_WEBDRIVER_URL);
+const CHROME_BINARY_PATH = process.env.CHROME_BINARY_PATH || (USING_REMOTE_WEBDRIVER
+  ? "/opt/chromium44/chrome-linux/chrome"
+  : "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+const BROWSER_APP_HOST = process.env.BROWSER_APP_HOST || (REMOTE_WEBDRIVER_URL ? "host.docker.internal" : "127.0.0.1");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function usingLegacyChromeDriver() {
+  return Boolean(CHROMEDRIVER_PATH) || USING_REMOTE_WEBDRIVER;
+}
+
+function getWebDriverEndpoint(url) {
+  if (!url) {
+    return "";
+  }
+
+  const parsed = new URL(url);
+  if (parsed.pathname === "/wd/hub") {
+    return parsed.toString();
+  }
+
+  if (parsed.pathname === "/" || parsed.pathname === "") {
+    parsed.pathname = "/wd/hub";
+    return parsed.toString();
+  }
+
+  return parsed.toString();
 }
 
 function getRequestUrlFromEntry(entry) {
@@ -64,12 +93,14 @@ async function findAvailablePort() {
 }
 
 function startAppServer(port) {
-  const serverProcess = spawn(process.execPath, ["server.js"], {
+  const entrypoint = path.join(ROOT_DIR, "server.js");
+  const serverProcess = spawn(process.execPath, [entrypoint], {
     cwd: ROOT_DIR,
     stdio: "inherit",
     env: {
       ...process.env,
       PORT: String(port),
+      HOST: "0.0.0.0",
     },
   });
 
@@ -113,19 +144,73 @@ async function stopServer(serverProcess) {
 }
 
 async function createDriver() {
-  const options = new chrome.Options();
-  options.addArguments("--disable-gpu", "--window-size=1280,800");
+  let chromeDriverService = null;
+  let serviceUrl = getWebDriverEndpoint(REMOTE_WEBDRIVER_URL);
 
-  if (String(process.env.HEADLESS || "").toLowerCase() === "true") {
-    options.addArguments("--headless");
+  if (!serviceUrl) {
+    const serviceBuilder = CHROMEDRIVER_PATH ? new chrome.ServiceBuilder(CHROMEDRIVER_PATH) : new chrome.ServiceBuilder();
+    chromeDriverService = serviceBuilder.build();
+    serviceUrl = await chromeDriverService.start();
   }
 
-  options.setChromeBinaryPath(CHROME_BINARY_PATH);
-  options.setLoggingPrefs({ performance: "ALL" });
+  const chromeArgs = ["--disable-gpu", "--window-size=1280,800"];
+  if (String(process.env.HEADLESS || "").toLowerCase() === "true") {
+    chromeArgs.push("--headless");
+  }
 
-  const serviceBuilder = CHROMEDRIVER_PATH ? new chrome.ServiceBuilder(CHROMEDRIVER_PATH) : new chrome.ServiceBuilder();
+  if (usingLegacyChromeDriver()) {
+    chromeArgs.push(
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--no-first-run",
+      "--disable-default-apps",
+      "--disable-extensions",
+      "--disable-background-networking",
+      "--disable-sync",
+      "--metrics-recording-only",
+      "--safebrowsing-disable-auto-update",
+      "--disable-component-update",
+    );
+  }
 
-  return new Builder().forBrowser("chrome").setChromeOptions(options).setChromeService(serviceBuilder).build();
+  const legacyDesiredCapabilities = {
+    browserName: "chrome",
+    loggingPrefs: { performance: "ALL" },
+    chromeOptions: {
+      binary: CHROME_BINARY_PATH,
+      args: chromeArgs,
+    },
+    chrome: {
+      binary: CHROME_BINARY_PATH,
+    },
+  };
+
+  const executor = new http.Executor(new http.HttpClient(serviceUrl));
+  if (usingLegacyChromeDriver()) {
+    executor.defineCommand(command.Name.EXECUTE_SCRIPT, "POST", "/session/:sessionId/execute");
+    executor.defineCommand(command.Name.EXECUTE_ASYNC_SCRIPT, "POST", "/session/:sessionId/execute_async");
+  }
+
+  const createSessionCommand = new command.Command(command.Name.NEW_SESSION);
+  createSessionCommand.setParameter("desiredCapabilities", legacyDesiredCapabilities);
+  createSessionCommand.setParameter("requiredCapabilities", {});
+
+  try {
+    const session = await executor.execute(createSessionCommand);
+    const driver = new WebDriver(Promise.resolve(session), executor, async () => {
+      if (chromeDriverService) {
+        await Promise.resolve(chromeDriverService.kill());
+      }
+    });
+
+    return { driver, chromeDriverService };
+  } catch (error) {
+    if (chromeDriverService) {
+      await Promise.resolve(chromeDriverService.kill());
+    }
+    throw error;
+  }
 }
 
 async function waitForTubiRequest(driver) {
@@ -160,15 +245,39 @@ async function runTests() {
   await runBuild();
   const port = await findAvailablePort();
   globalThis.__APP_PORT__ = port;
-  const baseUrl = `http://127.0.0.1:${port}`;
+  const baseUrl = `http://${BROWSER_APP_HOST}:${port}`;
   const serverProcess = startAppServer(port);
   let driver;
+  let chromeDriverService;
 
   try {
     await waitForServerReady();
-    driver = await createDriver();
+
+    if (REMOTE_WEBDRIVER_URL) {
+      const connectivityProbe = spawn(
+        "docker",
+        [
+          "exec",
+          "legacy44-driver",
+          "bash",
+          "-lc",
+          `curl -s -m 5 '${baseUrl}' | head -n 5`,
+        ],
+        { cwd: ROOT_DIR, stdio: "inherit" },
+      );
+      await new Promise((resolve) => connectivityProbe.on("exit", resolve));
+    }
+
+    const browser = await createDriver();
+    driver = browser.driver;
+    chromeDriverService = browser.chromeDriverService;
 
     await driver.get(baseUrl);
+
+    const currentUrl = await driver.getCurrentUrl();
+    if (!currentUrl || currentUrl.indexOf(baseUrl) !== 0) {
+      throw new Error(`Expected browser URL to start with '${baseUrl}', received '${currentUrl}'`);
+    }
 
     const heading = await driver.wait(until.elementLocated(By.xpath("//*[contains(text(), 'Hello World')]")), 10_000);
     const headingText = await heading.getText();
@@ -196,6 +305,10 @@ async function runTests() {
   } finally {
     if (driver) {
       await driver.quit();
+    }
+
+    if (chromeDriverService) {
+      await Promise.resolve(chromeDriverService.kill());
     }
 
     await stopServer(serverProcess);
