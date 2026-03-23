@@ -1,0 +1,29 @@
+{
+  "name": "old-chromium-test",
+  "version": "1.0.0",
+  "description": "Basic React 18 + Selenium setup",
+  "main": "server.js",
+  "scripts": {
+    "build": "node scripts/build.js",
+    "start": "npm run build && node server.js",
+    "test": "node tests/selenium.test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "es6-promise": "^4.2.8",
+    "express": "^5.2.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "whatwg-fetch": "^3.6.20"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.29.0",
+    "@babel/preset-env": "^7.29.2",
+    "@babel/preset-react": "^7.28.5",
+    "esbuild": "^0.27.4",
+    "selenium-webdriver": "^4.41.0"
+  }
+}
